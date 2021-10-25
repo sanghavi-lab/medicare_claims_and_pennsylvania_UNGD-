@@ -1,46 +1,24 @@
-# 7/7/20
-
-# This script estimates negative binomial models and creates a spreadsheet comparing the results
-# of the various model specifications, essentially tables 2 and 3 in the publication.
-
-# The models vary in:
-#  * Treatment: new well density, cumulative well density
-#    - For new well density, models are also run controlling for existing well density in the zip code
-#  * Outcome: ICD9 codes/outcomes vary
-#  * Geographical regions included in the model: different unexposed regions (NY Border, NY Mid) are paired with the exposed region (PA Border)
-
-# Reads in:
-#  Cleaned/organized hospitalization data:    /gpfs/data/sanghavi-lab/Kevin/Output/FIN-raw-rates-plots/generating-tables/MASTER-DF.csv
-#  Cleaned spud data:                         /gpfs/data/sanghavi-lab/Kevin/Output/THES-DID-INP-REF-ZIP-zipcode-aggregated-spuds.csv
-#  List of health outcomes:                   /gpfs/data/sanghavi-lab/Kevin/Data/FIN-outcome-group-ICDs.csv
-
-# Writes out:
-#  Spreadsheet with model results:            /gpfs/data/sanghavi-lab/Kevin/Output/FIN-continuous-models-output.csv
-
-# For prior code version see PUB-ZIP-continuous-models.R
-
-
-
-
+## This script is to build 
+## several DID models to study the effect of well development on a few health outcomes
+## by comparing NY and PA
 
 library(dplyr)
 library(stringr)
 library(tidyr)
 library(MASS)   # for negative binomial model
 library(mfx)    # for clustered SEs in neg bin model
-
-
-
+library(ggplot2)
+options(tibble.print_max = 200)
+options(nwarnings = 10000)
 
 # READ AND ARRANGE DATA =======================
 
-
 # Spud data
-agg_spuds <- read.csv("/gpfs/data/sanghavi-lab/Kevin/Output/THES-DID-INP-REF-ZIP-zipcode-aggregated-spuds.csv") %>%
+agg_spuds <- read.csv("/gpfs/data/sanghavi-lab/TRANSFER_DESTROY/dua54200/Kevin/Output/THES-DID-INP-REF-ZIP-zipcode-aggregated-spuds.csv") %>%
   tbl_df()
 
 # Cleaned MedPAR/MBSF data
-master_df <- read.csv("/gpfs/data/sanghavi-lab/Kevin/Output/FIN-raw-rates-plots/generating-tables/MASTER-DF.csv") %>%
+master_df <- read.csv("/gpfs/data/sanghavi-lab/TRANSFER_DESTROY/dua54200/Kevin/Output/FIN-raw-rates-plots/generating-tables/MASTER-DF.csv") %>%
   tbl_df() %>%
   filter(Year >= 2002) %>%
   left_join(agg_spuds, by=c("Year" = "year", "ZipCode" = "zipcode")) %>%
@@ -48,33 +26,93 @@ master_df <- read.csv("/gpfs/data/sanghavi-lab/Kevin/Output/FIN-raw-rates-plots/
   mutate(NewSpudDensity = NewSpudDensity * 2589988.1103, CumulativeSpudDensity = CumulativeSpudDensity * 2589988.1103) %>%    # convert from spuds/m^2 to spuds/mi^2
   mutate(NewSpudsPerBene = NewSpuds / nBenes, CumulativeSpudsPerBene = CumulativeSpuds / nBenes) %>%
   mutate(ZipCode = as.factor(ZipCode))
-print("Got master df (joined):")
-print(master_df)
 
 # Names of outcomes we're studying
 # Get outcomes as list (effectively a dictionary from outcome group name, e.g. "stroke", to list of ICD9 codes)
-outcomes_df <- read.csv("/gpfs/data/sanghavi-lab/Kevin/Data/FIN-outcome-group-ICDs.csv") %>%
+outcomes_df <- read.csv("/gpfs/data/sanghavi-lab/TRANSFER_DESTROY/dua54200/Kevin/Data/FIN-outcome-group-ICDs.csv") %>%
   tbl_df() %>%
   group_by(OutcomeGroup) %>%
   summarize(ICD9s_string = paste0(ICD9, collapse="/"))
 outcomes <- setNames(strsplit(outcomes_df$ICD9s_string, "/"), outcomes_df$OutcomeGroup)
-print("Got outcomes list:")
-print(outcomes)
 
 
+# # SELECT ONLY ZIP CODES FIRST GOT WELL DEVELOPMENT IN 2008 AND AFTERWARDS ---------------------------------
+distinct_zip_year =
+  master_df %>%
+  filter(StudyGroup=='PA Border') %>%
+  distinct(ZipCode, Year, NewSpuds, CumulativeSpuds, CumulativeSpudDensity) %>%
+  arrange(ZipCode, Year, NewSpuds, CumulativeSpuds) %>%
+  group_by(ZipCode) %>%
+  mutate(growth = NewSpuds/lag(NewSpuds)) %>%
+  mutate(growth_lag = growth/lag(growth))
+
+first_spuds = master_df %>%
+  filter(StudyGroup=='PA Border') %>%
+  distinct(ZipCode, Year, NewSpuds) %>%
+  filter(NewSpuds!=0) %>%
+  arrange(ZipCode, Year) %>%
+  distinct(ZipCode, .keep_all = T)
+
+treatment_df = first_spuds %>% filter(Year>=2008)
 
 
+# ## plot the trend of hospitalization rate --------
+# plot_df <- 
+#   master_df %>%
+#   filter(!is.na(Incidence)) %>%
+#   filter((ZipCode %in%
+#             treatment_df$ZipCode) |
+#            (StudyGroup %in% c("NY Mid", "NY Border"))) %>%
+#   filter(NumDiagnosisColsUsed == 2) %>% 
+#   group_by(StudyGroup, Year, OutcomeGroup) %>% 
+#   summarise(claims = sum(NumClaims),
+#             benes = sum(nBenes)) %>% 
+#   mutate(HosRate100 = ifelse(Year==2015,
+#                              claims/benes * 365/237 * 100,
+#                              100*claims/benes),
+#          Year = as.factor(Year)) %>% 
+#   filter(OutcomeGroup!="no-ami-ihd") %>% 
+#   mutate(OutcomeGroup = case_when(OutcomeGroup == "ami" ~ "AMI (subset of IHD)",
+#                                   OutcomeGroup == "ihd" ~ "Ischemic heart disease (IHD, including AMI)",
+#                                   OutcomeGroup == "copd" ~ "Chornic obstructive pulmonary disease (COPD)",
+#                                   OutcomeGroup == "heart-failure" ~ "Heart Failure",
+#                                   OutcomeGroup == "stroke" ~ "Stroke"))
+# 
+# p <- 
+#   ggplot(plot_df, 
+#          aes(x = Year, y = HosRate100, color = StudyGroup)) +
+#   geom_point() +
+#   geom_path(aes(group = StudyGroup)) +
+#   facet_wrap(OutcomeGroup~. , scales = "free_y") +
+#   labs(y = "Hospitalizations Per Hundred Beneficiaries",
+#        caption = "Notes: the health outcome is determined by the first 2 diagnosis codes in MedPAR hospital admission data") +
+#   scale_color_manual(name="Study Region", 
+#                      values=c("#004488", "#BB5566", "#DDAA33"),
+#                      breaks=c("NY Mid", "NY Border", "PA Border"),
+#                      labels=c("Main control", "Alt. control (bordering)", "Exposed")) +
+#   scale_shape_manual(name="Study Region",
+#                      values=c(15, 16, 17),
+#                      breaks=c("NY Mid", "NY Border", "PA Border"),
+#                      labels=c("Main control", "Alt. control (bordering)", "Exposed")) +
+#   theme_bw() + 
+#   theme(legend.box.background = element_rect(color="black", size=1),
+#         plot.caption = element_text(hjust = 0, size = 20),
+#         axis.title = element_text(size = 24),
+#         legend.position = c(0.95, 0.2), legend.justification = c(0.95, 0.2),
+#         legend.key.height = unit(2, 'cm'), #change legend key height
+#         legend.key.width = unit(2, 'cm'), #change legend key width
+#         legend.title = element_text(size=20), #change legend title font size
+#         legend.text = element_text(size=20))
+# 
+# ggsave(p, width = 18, height = 15,
+#        filename = '/gpfs/data/sanghavi-lab/Zoey/gardner/fracing/Final_Code_Output/FIN-hospitalization-trends.png')
+# 
 
+# # RUN DID REGRESSION WITH TWO-YEAR WASHOUT PERIOD ONLY 2008 AND AFTERWARDS-------------------------
 
+## Build the model based on zipcode-level data
 
-
-
-# START MODELS =================================
-
-
-# Keep the following table of information produced by each model, including RRs, standard errors, etc.
-
-model_output_df <- tibble(
+did_output_df <- tibble(
   Treatment = character(0),
   Outcome = character(0),
   DiagnosisColsUsed = numeric(0),
@@ -85,227 +123,354 @@ model_output_df <- tibble(
   ControlRegion = character(0),
   Estimate = numeric(0),
   StdErr = numeric(0),
+  ZVal = numeric(0),
+  PUnadjusted = numeric(0),
   RateRatio = numeric(0),
   RateRatioStdErr = numeric(0),
-  PVal = numeric(0),
-  Gamma = numeric(0),
-  GammaStdErr = numeric(0),
-  GammaPVal = numeric(0),
-  FittedHospitalizationRateInExposedRegion = numeric(0),
-  FittedHospitalizationRateInControlRegion = numeric(0),
-  PredictedCounterfactualRateInExposedRegion = numeric(0),
-  FittedTotalCasesInExposedRegion = numeric(0),
-  FittedTotalCasesInControlRegion = numeric(0),
-  PredictedTotalCasesCounterfactualInExposedRegion = numeric(0)
+  PVal = numeric(0)
 )
 
 
-# Iterate through different model specifications that we're performing and record results in the table
+for (outcome_name in names(outcomes)) {
+  for (control_region in c("NY Border", "NY Mid")) {
+    for (num_dgns_cols in c(2, 25)) {
 
-for (treatment in c("NewSpudDensity", "CumulativeSpudDensity")) {
-  for (outcome_name in names(outcomes)) {
-    for (control_region in c("NY Border", "NY Mid")) {
-      for (num_dgns_cols in c(2, 25)) {
+      print(paste0(outcome_name, control_region, num_dgns_cols, "---------", sep = " "))
+      model_df <-
+        master_df %>%
+        filter(!is.na(Incidence)) %>%
+        filter((ZipCode %in%
+                  treatment_df$ZipCode) |
+                 StudyGroup==control_region) %>%
+        filter(NumDiagnosisColsUsed == num_dgns_cols) %>%
+        filter(OutcomeGroup==outcome_name) %>%
+        mutate(treated = ifelse(StudyGroup=='PA Border', 1, 0),
+               post = ifelse(Year>=2008, 1, 0),
+               OffsetBenes = offset(log(nBenes)),
+               Year = as.factor(Year)) %>%
+        filter(!Year %in% c(2008, 2009))
+      
+      ## run the simple DID model
+      treatment = "treated:post"
+      formula <- paste0("NumClaims ~ treated*post + OffsetBenes")
+
+      mfx_res <- negbinirr(formula, model_df, clustervar1="ZipCode")
+      model <- mfx_res$fit
+      coefficients <- summary(model)$coefficients
+
+      did_output_df <- did_output_df %>%
+        add_row(Treatment = treatment, Outcome = outcome_name, DiagnosisColsUsed = num_dgns_cols,
+                ModelSpecification = "Neg. binomial, two-year washout period (08&09) DiD, clustered SEs by zip code",
+                Formula = formula, Package = "mfx::negbinirr",
+                ClusteringAtZipCode = TRUE, ControlRegion = control_region,
+                Estimate = coefficients[treatment, "Estimate"],
+                StdErr = coefficients[treatment, "Std. Error"],
+                ZVal = coefficients[treatment, "z value"],
+                PUnadjusted = coefficients[treatment, "Pr(>|z|)"],
+                RateRatio = mfx_res$irr[treatment, "IRR"],
+                RateRatioStdErr = mfx_res$irr[treatment, "Std. Err."],
+                PVal = mfx_res$irr[treatment, "P>|z|"])
+      ## run Zip Code FE with binary treatment
+      treatment = "treated:post"
+      formula <- paste0("NumClaims ~ treated:post + post + ZipCode + OffsetBenes")
+
+      mfx_res <- negbinirr(formula, model_df, clustervar1="ZipCode")
+      model <- mfx_res$fit
+      coefficients <- summary(model)$coefficients
+
+      did_output_df <- did_output_df %>%
+        add_row(Treatment = treatment, Outcome = outcome_name, DiagnosisColsUsed = num_dgns_cols,
+                ModelSpecification = "Neg. binomial, two-year washout period (08&09) Zip Code FE with binary treatment, clustered SEs by zip code",
+                Formula = formula, Package = "mfx::negbinirr",
+                ClusteringAtZipCode = TRUE, ControlRegion = control_region,
+                Estimate = coefficients[treatment, "Estimate"],
+                StdErr = coefficients[treatment, "Std. Error"],
+                ZVal = coefficients[treatment, "z value"],
+                PUnadjusted = coefficients[treatment, "Pr(>|z|)"],
+                RateRatio = mfx_res$irr[treatment, "IRR"],
+                RateRatioStdErr = mfx_res$irr[treatment, "Std. Err."],
+                PVal = mfx_res$irr[treatment, "P>|z|"])
+      ## run year FE with binary treatment
+      treatment = "treated:post"
+      formula <- paste0("NumClaims ~ treated:post + treated + Year + OffsetBenes")
+
+      mfx_res <- negbinirr(formula, model_df, clustervar1="ZipCode")
+      model <- mfx_res$fit
+      coefficients <- summary(model)$coefficients
+
+      did_output_df <- did_output_df %>%
+        add_row(Treatment = treatment, Outcome = outcome_name, DiagnosisColsUsed = num_dgns_cols,
+                ModelSpecification = "Neg. binomial, two-year washout period (08&09) Year FE with binary treatment for large, medium and small development Zip Codes in PA as treatmnet, clustered SEs by zip code",
+                Formula = formula, Package = "mfx::negbinirr",
+                ClusteringAtZipCode = TRUE, ControlRegion = control_region,
+                Estimate = coefficients[treatment, "Estimate"],
+                StdErr = coefficients[treatment, "Std. Error"],
+                ZVal = coefficients[treatment, "z value"],
+                PUnadjusted = coefficients[treatment, "Pr(>|z|)"],
+                RateRatio = mfx_res$irr[treatment, "IRR"],
+                RateRatioStdErr = mfx_res$irr[treatment, "Std. Err."],
+                PVal = mfx_res$irr[treatment, "P>|z|"])
+      ## run the twfe with binary treatment
+      treatment = "treated:post"
+      formula <- paste0("NumClaims ~ treated:post + Year + ZipCode + OffsetBenes")
+
+      mfx_res <- negbinirr(formula, model_df, clustervar1="ZipCode")
+      model <- mfx_res$fit
+      coefficients <- summary(model)$coefficients
+
+      did_output_df <- did_output_df %>%
+        add_row(Treatment = treatment, Outcome = outcome_name, DiagnosisColsUsed = num_dgns_cols,
+                ModelSpecification = "Neg. binomial, two-year washout period (08&09) TWFE with binary treatment, clustered SEs by zip code",
+                Formula = formula, Package = "mfx::negbinirr",
+                ClusteringAtZipCode = TRUE, ControlRegion = control_region,
+                Estimate = coefficients[treatment, "Estimate"],
+                StdErr = coefficients[treatment, "Std. Error"],
+                ZVal = coefficients[treatment, "z value"],
+                PUnadjusted = coefficients[treatment, "Pr(>|z|)"],
+                RateRatio = mfx_res$irr[treatment, "IRR"],
+                RateRatioStdErr = mfx_res$irr[treatment, "Std. Err."],
+                PVal = mfx_res$irr[treatment, "P>|z|"])
+    }
+  }
+}
 
 
-        print('====================')
-        print(paste(treatment, outcome_name, control_region))
-        print('\n\n\n')
-          
-        # Filter to relevant data frame -
-        # Each row is one zipcode-year, with incidence rate, StudyGroup, ...
-        model_df <- master_df %>%
-          filter(OutcomeGroup == outcome_name) %>%
-          filter(StudyGroup == "PA Border" | StudyGroup == control_region) %>%
-          filter(NumDiagnosisColsUsed == num_dgns_cols) %>%
-          filter(!is.na(Incidence))
+print('regression is complete')
+write.csv(did_output_df,
+          file = '/gpfs/data/sanghavi-lab/Zoey/gardner/fracing/Final_Code_Output/FIN_DID_results_washout_only2008andAfter_ZipcodeLevel.csv')
 
-        counterfactual_df <- model_df %>%    # used for counterfactual predictions (if there were no fracking present)
-          mutate(NewSpuds = 0, CumulativeSpuds = 0,
-                 NewSpudDensity = 0, CumulativeSpudDensity = 0,
-                 NewSpudsPerBene = 0, CumulativeSpudsPerBene = 0)
+# # RUN PLACEBO TEST FOR DID REGRESSION WITH TWO-YEAR WASHOUT PERIOD ONLY 2008 AND AFTERWARDS-------------------------
+
+## Build the model based on state-level data, aggregating Zip Codes in PA and NY
+
+## Build the model based on zipcode-level data
+
+did_output_df <- tibble(
+  Treatment = character(0),
+  Outcome = character(0),
+  DiagnosisColsUsed = numeric(0),
+  ModelSpecification = character(0),
+  Formula = character(0),
+  Package = character(0),
+  ClusteringAtZipCode = logical(0),
+  ControlRegion = character(0),
+  Estimate = numeric(0),
+  StdErr = numeric(0),
+  ZVal = numeric(0),
+  PUnadjusted = numeric(0),
+  RateRatio = numeric(0),
+  RateRatioStdErr = numeric(0),
+  PVal = numeric(0)
+)
 
 
-        # RUN NEG BINOMIAL MODELS:
-        
+for (outcome_name in names(outcomes)) {
+  for (control_region in c("NY Border", "NY Mid")) {
+    for (num_dgns_cols in c(2, 25)) {
+      # zip <- rbind(large, medium, small)
+      # zip <- zip %>% filter(Yearfirst >= 2008)
+      print(paste0(outcome_name, control_region, num_dgns_cols, "---------", sep = " "))
 
-        # Model: Zip code FE, no state indicators, clustering by zip code, Negative Binomial
-        model_df_mfx <- model_df %>%   # need to do this since including functions in the formula call gives an error when using clustering, for some reason
-          mutate(Year = as.factor(Year), OffsetBenes = offset(log(nBenes)))   # ZipCode already a factor
-        formula <- paste0("NumClaims ~ ", treatment, " + Year + ZipCode + OffsetBenes")
-        mfx_res <- negbinirr(formula, model_df_mfx, clustervar1="ZipCode")
-        model <- mfx_res$fit
-        coefficients <- summary(model)$coefficients
+      model_df <-
+        master_df %>%
+        filter(!is.na(Incidence)) %>%
+        filter((ZipCode %in%
+                  treatment_df$ZipCode) |
+                 StudyGroup==control_region) %>%
+        filter(NumDiagnosisColsUsed == num_dgns_cols) %>%
+        filter(OutcomeGroup==outcome_name) %>%
+        filter(Year < 2008) %>%
+        mutate(treated = ifelse(StudyGroup=='PA Border', 1, 0),
+               post = ifelse(Year>=2004, 1, 0),
+               OffsetBenes = offset(log(nBenes)),
+               Year = as.factor(Year)) %>%
+        filter(!Year %in% c(2004, 2005))
+      ## run the simple DID model
+      treatment = "treated:post"
+      formula <- paste0("NumClaims ~ treated*post + OffsetBenes")
 
-        counterfactual_df_mfx <- counterfactual_df %>%
-          mutate(Year = as.factor(Year), OffsetBenes = offset(log(nBenes)))
-        zipcode_predictions_tbl <- tibble(
-          ZipCode = model_df_mfx$ZipCode,
-          Year = model_df_mfx$Year,
-          nBenes = model_df_mfx$nBenes,
-          OffsetBenes = model_df_mfx$OffsetBenes,
-          ExposedRegion = model_df_mfx$StudyGroup == "PA Border",
-          FittedHospitalizationCount = fitted(model),
-          PredictedCounterfactualCount = predict(model, newdata=counterfactual_df_mfx, type="response")
-        )
-        exposed_predictions_tbl <- zipcode_predictions_tbl %>% filter(ExposedRegion)
-        control_predictions_tbl <- zipcode_predictions_tbl %>% filter(!ExposedRegion)
-        model_output_df <- model_output_df %>%
+      mfx_res <- negbinirr(formula, model_df, clustervar1="ZipCode")
+      model <- mfx_res$fit
+      coefficients <- summary(model)$coefficients
+
+      print(mfx_res$irr)
+      did_output_df <- did_output_df %>%
+        add_row(Treatment = treatment, Outcome = outcome_name, DiagnosisColsUsed = num_dgns_cols,
+                ModelSpecification = "Neg. binomial, two-year washout period (04&05) DiD, clustered SEs by zip code",
+                Formula = formula, Package = "mfx::negbinirr",
+                ClusteringAtZipCode = TRUE, ControlRegion = control_region,
+                Estimate = coefficients[treatment, "Estimate"],
+                StdErr = coefficients[treatment, "Std. Error"],
+                ZVal = coefficients[treatment, "z value"],
+                PUnadjusted = coefficients[treatment, "Pr(>|z|)"],
+                RateRatio = mfx_res$irr[treatment, "IRR"],
+                RateRatioStdErr = mfx_res$irr[treatment, "Std. Err."],
+                PVal = mfx_res$irr[treatment, "P>|z|"])
+      ## run Zip Code FE with binary treatment
+      treatment = "treated:post"
+      formula <- paste0("NumClaims ~ treated:post + post + ZipCode + OffsetBenes")
+
+      mfx_res <- negbinirr(formula, model_df, clustervar1="ZipCode")
+      model <- mfx_res$fit
+      coefficients <- summary(model)$coefficients
+      print(summary(warnings()))
+      # print(mfx_res$irr)
+      did_output_df <- did_output_df %>%
+        add_row(Treatment = treatment, Outcome = outcome_name, DiagnosisColsUsed = num_dgns_cols,
+                ModelSpecification = "Neg. binomial, two-year washout period (04&05) Zip Code FE with binary treatment, clustered SEs by zip code",
+                Formula = formula, Package = "mfx::negbinirr",
+                ClusteringAtZipCode = TRUE, ControlRegion = control_region,
+                Estimate = coefficients[treatment, "Estimate"],
+                StdErr = coefficients[treatment, "Std. Error"],
+                ZVal = coefficients[treatment, "z value"],
+                PUnadjusted = coefficients[treatment, "Pr(>|z|)"],
+                RateRatio = mfx_res$irr[treatment, "IRR"],
+                RateRatioStdErr = mfx_res$irr[treatment, "Std. Err."],
+                PVal = mfx_res$irr[treatment, "P>|z|"])
+      ## run year FE with binary treatment
+      treatment = "treated:post"
+      formula <- paste0("NumClaims ~ treated:post + treated + Year + OffsetBenes")
+
+      mfx_res <- negbinirr(formula, model_df, clustervar1="ZipCode")
+      model <- mfx_res$fit
+      coefficients <- summary(model)$coefficients
+      print(summary(warnings()))
+
+      # print(mfx_res$irr)
+      did_output_df <- did_output_df %>%
+        add_row(Treatment = treatment, Outcome = outcome_name, DiagnosisColsUsed = num_dgns_cols,
+                ModelSpecification = "Neg. binomial, two-year washout period (04&05) Year FE with binary treatment for large, medium and small development Zip Codes in PA as treatmnet, clustered SEs by zip code",
+                Formula = formula, Package = "mfx::negbinirr",
+                ClusteringAtZipCode = TRUE, ControlRegion = control_region,
+                Estimate = coefficients[treatment, "Estimate"],
+                StdErr = coefficients[treatment, "Std. Error"],
+                ZVal = coefficients[treatment, "z value"],
+                PUnadjusted = coefficients[treatment, "Pr(>|z|)"],
+                RateRatio = mfx_res$irr[treatment, "IRR"],
+                RateRatioStdErr = mfx_res$irr[treatment, "Std. Err."],
+                PVal = mfx_res$irr[treatment, "P>|z|"])
+      ## run the twfe with binary treatment
+      treatment = "treated:post"
+      formula <- paste0("NumClaims ~ treated:post + Year + ZipCode + OffsetBenes")
+
+      mfx_res <- negbinirr(formula, model_df, clustervar1="ZipCode")
+      model <- mfx_res$fit
+      coefficients <- summary(model)$coefficients
+      print(summary(warnings()))
+
+      # print(mfx_res$irr)
+      did_output_df <- did_output_df %>%
+        add_row(Treatment = treatment, Outcome = outcome_name, DiagnosisColsUsed = num_dgns_cols,
+                ModelSpecification = "Neg. binomial, two-year washout period (04&05) TWFE with binary treatment, clustered SEs by zip code",
+                Formula = formula, Package = "mfx::negbinirr",
+                ClusteringAtZipCode = TRUE, ControlRegion = control_region,
+                Estimate = coefficients[treatment, "Estimate"],
+                StdErr = coefficients[treatment, "Std. Error"],
+                ZVal = coefficients[treatment, "z value"],
+                PUnadjusted = coefficients[treatment, "Pr(>|z|)"],
+                RateRatio = mfx_res$irr[treatment, "IRR"],
+                RateRatioStdErr = mfx_res$irr[treatment, "Std. Err."],
+                PVal = mfx_res$irr[treatment, "P>|z|"])
+    }
+  }
+}
+
+print('regression is complete')
+write.csv(did_output_df,
+          file = '/gpfs/data/sanghavi-lab/Zoey/gardner/fracing/Final_Code_Output/FIN_placebo_results_washout_only2008andAfter_ZipcodeLevel.csv')
+
+
+
+
+
+
+
+
+
+
+
+
+# # RUN PLACEBO TEST FOR DID REGRESSION WITH TWO-YEAR WASHOUT PERIOD ONLY 2008 AND AFTERWARDS-------------------------
+
+## Build the model based on zipcode-level data
+
+did_output_df <- tibble(
+  Treatment = character(0),
+  Outcome = character(0),
+  DiagnosisColsUsed = numeric(0),
+  ModelSpecification = character(0),
+  Formula = character(0),
+  Package = character(0),
+  ClusteringAtZipCode = logical(0),
+  ControlRegion = character(0),
+  Estimate = numeric(0),
+  StdErr = numeric(0),
+  ZVal = numeric(0),
+  PUnadjusted = numeric(0),
+  RateRatio = numeric(0),
+  RateRatioStdErr = numeric(0),
+  PVal = numeric(0)
+)
+
+
+for (outcome_name in names(outcomes)) {
+  for (control_region in c("NY Border", "NY Mid")) {
+    for (num_dgns_cols in c(2, 25)) {
+      model_df <-
+        master_df %>%
+        filter(!is.na(Incidence)) %>%
+        filter((ZipCode %in%
+                  treatment_df$ZipCode) |
+                 StudyGroup==control_region) %>%
+        filter(NumDiagnosisColsUsed == num_dgns_cols) %>%
+        filter(OutcomeGroup==outcome_name) %>%
+        mutate(treated = ifelse(StudyGroup=='PA Border', 1, 0),
+               post = ifelse(Year>=2008, 1, 0),
+               OffsetBenes = offset(log(nBenes)),
+               Year = as.factor(Year)) %>%
+        filter(!Year %in% c(2008, 2009)) %>%
+        mutate(Year2003 = ifelse(Year==2003, 1, 0), ## sometimes the reference level of interaction is not set at treated:2002
+               Year2004 = ifelse(Year==2004, 1, 0),
+               Year2005 = ifelse(Year==2005, 1, 0),
+               Year2006 = ifelse(Year==2006, 1, 0),
+               Year2007 = ifelse(Year==2007, 1, 0),
+               Year2010 = ifelse(Year==2010, 1, 0),
+               Year2011 = ifelse(Year==2011, 1, 0),
+               Year2012 = ifelse(Year==2012, 1, 0),
+               Year2013 = ifelse(Year==2013, 1, 0),
+               Year2014 = ifelse(Year==2014, 1, 0),
+               Year2015 = ifelse(Year==2015, 1, 0))
+      ## run the twfe with binary treatment
+      formula <- paste0("NumClaims ~ treated:Year2003 + treated:Year2004 + treated:Year2005 + treated:Year2006 + treated:Year2007 +
+                         treated:Year2010 + treated:Year2011 + treated:Year2012 + treated:Year2013 + treated:Year2014 +
+                         treated:Year2015 + Year + ZipCode + OffsetBenes")
+
+      mfx_res <- negbinirr(formula, model_df, clustervar1="ZipCode")
+      model <- mfx_res$fit
+      coefficients <- summary(model)$coefficients
+      # print(mfx_res$irr)
+      for (year in c(2003, 2004, 2005, 2006, 2007, 2010, 2011, 2012, 2013, 2014, 2015)){
+
+        treatment = paste0("treated:Year", year)
+        print(treatment)
+        did_output_df <- did_output_df %>%
           add_row(Treatment = treatment, Outcome = outcome_name, DiagnosisColsUsed = num_dgns_cols,
-                  ModelSpecification = "Neg. binomial, zip code FE, clustered SEs by zip code",
+                  ModelSpecification = "Neg. binomial, two-year washout period (08-09) TWFE with binary treatment, clustered SEs by zip code",
                   Formula = formula, Package = "mfx::negbinirr",
                   ClusteringAtZipCode = TRUE, ControlRegion = control_region,
                   Estimate = coefficients[treatment, "Estimate"],
                   StdErr = coefficients[treatment, "Std. Error"],
+                  ZVal = coefficients[treatment, "z value"],
+                  PUnadjusted = coefficients[treatment, "Pr(>|z|)"],
                   RateRatio = mfx_res$irr[treatment, "IRR"],
                   RateRatioStdErr = mfx_res$irr[treatment, "Std. Err."],
-                  PVal = mfx_res$irr[treatment, "P>|z|"],
-                  Gamma = NA,
-                  GammaStdErr = NA,
-                  GammaPVal = NA,
-                  FittedHospitalizationRateInExposedRegion = sum(exposed_predictions_tbl$FittedHospitalizationCount) / sum(exposed_predictions_tbl$nBenes),
-                  FittedHospitalizationRateInControlRegion = sum(control_predictions_tbl$FittedHospitalizationCount) / sum(control_predictions_tbl$nBenes),
-                  PredictedCounterfactualRateInExposedRegion = sum(exposed_predictions_tbl$PredictedCounterfactualCount) / sum(exposed_predictions_tbl$nBenes),
-                  FittedTotalCasesInExposedRegion = sum(exposed_predictions_tbl$FittedHospitalizationCount),
-                  FittedTotalCasesInControlRegion = sum(control_predictions_tbl$FittedHospitalizationCount),
-                  PredictedTotalCasesCounterfactualInExposedRegion = sum(exposed_predictions_tbl$PredictedCounterfactualCount))
-
-
-        # If doing a "new UNGD exposure" instead of a "cumulative UNGD exposure", 
-        # run an additional model controlling for existing UNGD activity.
-        if (grepl("New", treatment)) {
-          corresponding_cumulative_treatment <- str_replace(treatment, "New", "Cumulative")   # e.g. "NewSpudDensity" becomes "CumulativeSpudDensity"
-          model_df_new <- model_df_mfx %>%
-            mutate(PreviousTreatment = (!!as.name(corresponding_cumulative_treatment)) - (!!as.name(treatment)))
-                # e.g. CumulativeSpudDensity - NewSpudDensity = spud density prior to this year
-          formula <- paste0("NumClaims ~ ", treatment, " + PreviousTreatment + Year + ZipCode + OffsetBenes")
-          mfx_res <- negbinirr(formula, model_df_new, clustervar1="ZipCode")
-          model <- mfx_res$fit
-          coefficients <- summary(model)$coefficients
-
-          counterfactual_df_new <- counterfactual_df_mfx %>%
-            mutate(PreviousTreatment = 0)
-          zipcode_predictions_tbl <- tibble(
-            ZipCode = model_df_mfx$ZipCode,
-            Year = model_df_mfx$Year,
-            nBenes = model_df_mfx$nBenes,
-            OffsetBenes = model_df_mfx$OffsetBenes,
-            ExposedRegion = model_df_mfx$StudyGroup == "PA Border",
-            FittedHospitalizationCount = fitted(model),
-            PredictedCounterfactualCount = predict(model, newdata=counterfactual_df_new, type="response")
-          )
-          exposed_predictions_tbl <- zipcode_predictions_tbl %>% filter(ExposedRegion)
-          control_predictions_tbl <- zipcode_predictions_tbl %>% filter(!ExposedRegion)
-          model_output_df <- model_output_df %>%
-            add_row(Treatment = treatment, Outcome = outcome_name, DiagnosisColsUsed = num_dgns_cols,
-                    ModelSpecification = "Neg. binomial, controlling for prior years' exposure, zip code FE, clustered SEs by zip code",
-                    Formula = formula, Package = "mfx::negbinirr",
-                    ClusteringAtZipCode = TRUE, ControlRegion = control_region,
-                    Estimate = coefficients[treatment, "Estimate"],
-                    StdErr = coefficients[treatment, "Std. Error"],
-                    RateRatio = mfx_res$irr[treatment, "IRR"],
-                    RateRatioStdErr = mfx_res$irr[treatment, "Std. Err."],
-                    PVal = mfx_res$irr[treatment, "P>|z|"],
-                    Gamma = coefficients["PreviousTreatment", "Estimate"],
-                    GammaStdErr = coefficients["PreviousTreatment", "Std. Error"],
-                    GammaPVal = mfx_res$irr["PreviousTreatment", "Std. Err."],
-                    FittedHospitalizationRateInExposedRegion = sum(exposed_predictions_tbl$FittedHospitalizationCount) / sum(exposed_predictions_tbl$nBenes),
-                    FittedHospitalizationRateInControlRegion = sum(control_predictions_tbl$FittedHospitalizationCount) / sum(control_predictions_tbl$nBenes),
-                    PredictedCounterfactualRateInExposedRegion = sum(exposed_predictions_tbl$PredictedCounterfactualCount) / sum(exposed_predictions_tbl$nBenes),
-                    FittedTotalCasesInExposedRegion = sum(exposed_predictions_tbl$FittedHospitalizationCount),
-                    FittedTotalCasesInControlRegion = sum(control_predictions_tbl$FittedHospitalizationCount),
-                    PredictedTotalCasesCounterfactualInExposedRegion = sum(exposed_predictions_tbl$PredictedCounterfactualCount))
-        }
-
-
-        # COMMENTED OUT BELOW:
-        # Non-clustering models
-
-        # # Model: Zip code FE, no state indicators, no clustering, Negative Binomial - using mfx package
-        # model_df_mfx <- model_df %>%   # need to do this since including functions in the formula call gives an error when using clustering, for some reason
-        #   mutate(Year = as.factor(Year), OffsetBenes = offset(log(nBenes)))   # ZipCode already a factor
-        # formula <- paste0("NumClaims ~ ", treatment, " + Year + ZipCode + OffsetBenes")
-        # mfx_res <- negbinirr(formula, model_df_mfx)
-        # model <- mfx_res$fit
-        # coefficients <- summary(model)$coefficients
-
-        # counterfactual_df_mfx <- counterfactual_df %>%
-        #   mutate(Year = as.factor(Year), OffsetBenes = offset(log(nBenes)))
-        # zipcode_predictions_tbl <- tibble(
-        #   ZipCode = model_df_mfx$ZipCode,
-        #   Year = model_df_mfx$Year,
-        #   nBenes = model_df_mfx$nBenes,
-        #   OffsetBenes = model_df_mfx$OffsetBenes,
-        #   ExposedRegion = model_df_mfx$StudyGroup == "PA Border",
-        #   FittedHospitalizationCount = fitted(model),
-        #   PredictedCounterfactualCount = predict(model, newdata=counterfactual_df_mfx, type="response")
-        # )
-        # exposed_predictions_tbl <- zipcode_predictions_tbl %>% filter(ExposedRegion)
-        # control_predictions_tbl <- zipcode_predictions_tbl %>% filter(!ExposedRegion)
-        # model_output_df <- model_output_df %>%
-        #   add_row(Treatment = treatment, Outcome = outcome_name, DiagnosisColsUsed = num_dgns_cols,
-        #           ModelSpecification = "Neg. binomial, zip code FE (mfx)",
-        #           Formula = formula, Package = "mfx::negbinirr",
-        #           ClusteringAtZipCode = FALSE, ControlRegion = control_region,
-        #           Estimate = coefficients[treatment, "Estimate"],
-        #           StdErr = coefficients[treatment, "Std. Error"],
-        #           RateRatio = mfx_res$irr[treatment, "IRR"],
-        #           RateRatioStdErr = mfx_res$irr[treatment, "Std. Err."],
-        #           PVal = mfx_res$irr[treatment, "P>|z|"],
-        #           FittedHospitalizationRateInExposedRegion = sum(exposed_predictions_tbl$FittedHospitalizationCount) / sum(exposed_predictions_tbl$nBenes),
-        #           FittedHospitalizationRateInControlRegion = sum(control_predictions_tbl$FittedHospitalizationCount) / sum(control_predictions_tbl$nBenes),
-        #           PredictedCounterfactualRateInExposedRegion = sum(exposed_predictions_tbl$PredictedCounterfactualCount) / sum(exposed_predictions_tbl$nBenes),
-        #           FittedTotalCasesInExposedRegion = sum(exposed_predictions_tbl$FittedHospitalizationCount),
-        #           FittedTotalCasesInControlRegion = sum(control_predictions_tbl$FittedHospitalizationCount),
-        #           PredictedTotalCasesCounterfactualInExposedRegion = sum(exposed_predictions_tbl$PredictedCounterfactualCount))
-
-
-        # # Model: Zip code FE, no state indicators, no clustering, Negative Binomial - using MASS package (glm.nb)
-        # formula <- paste0("NumClaims ~ ", treatment, " + as.factor(Year) + as.factor(ZipCode) + offset(log(nBenes))")
-        # model <- glm.nb(formula, data=model_df)
-        # coefficients <- summary(model)$coefficients
-
-        # zipcode_predictions_tbl <- tibble(
-        #   ZipCode = model_df$ZipCode,
-        #   Year = model_df$Year,
-        #   nBenes = model_df$nBenes,
-        #   ExposedRegion = model_df$StudyGroup == "PA Border",
-        #   FittedHospitalizationCount = fitted(model),
-        #   PredictedCounterfactualCount = predict(model, newdata=counterfactual_df, type="response")
-        # )
-        # exposed_predictions_tbl <- zipcode_predictions_tbl %>% filter(ExposedRegion)
-        # control_predictions_tbl <- zipcode_predictions_tbl %>% filter(!ExposedRegion)
-        # model_output_df <- model_output_df %>%
-        #   add_row(Treatment = treatment, Outcome = outcome_name, DiagnosisColsUsed = num_dgns_cols,
-        #           ModelSpecification = "Neg. binomial, zip code FE",
-        #           Formula = formula, Package = "MASS::glm.nb",
-        #           ClusteringAtZipCode = FALSE, ControlRegion = control_region,
-        #           Estimate = coefficients[treatment, "Estimate"],
-        #           StdErr = coefficients[treatment, "Std. Error"],
-        #           RateRatio = exp(coefficients[treatment, "Estimate"]),
-        #           RateRatioStdErr = NA,
-        #           PVal = coefficients[treatment, "Pr(>|z|)"],
-        #           FittedHospitalizationRateInExposedRegion = sum(exposed_predictions_tbl$FittedHospitalizationCount) / sum(exposed_predictions_tbl$nBenes),
-        #           FittedHospitalizationRateInControlRegion = sum(control_predictions_tbl$FittedHospitalizationCount) / sum(control_predictions_tbl$nBenes),
-        #           PredictedCounterfactualRateInExposedRegion = sum(exposed_predictions_tbl$PredictedCounterfactualCount) / sum(exposed_predictions_tbl$nBenes),
-        #           FittedTotalCasesInExposedRegion = sum(exposed_predictions_tbl$FittedHospitalizationCount),
-        #           FittedTotalCasesInControlRegion = sum(control_predictions_tbl$FittedHospitalizationCount),
-        #           PredictedTotalCasesCounterfactualInExposedRegion = sum(exposed_predictions_tbl$PredictedCounterfactualCount))
-
-
+                  PVal = mfx_res$irr[treatment, "P>|z|"])
       }
     }
   }
 }
 
 
-
-# WRITE OUTPUT TO FILE ===================
-
-write.csv(model_output_df, "/gpfs/data/sanghavi-lab/Kevin/Output/FIN-continuous-models-output.csv", row.names=F)
-print("Written model_output_df:")
-print(model_output_df)
-
-
-
-
+print('regression is complete')
+write.csv(did_output_df,
+          file = '/gpfs/data/sanghavi-lab/Zoey/gardner/fracing/Final_Code_Output/FIN_placebo_DID_results_only2008andAfter_ZipcodeLevel.csv')
