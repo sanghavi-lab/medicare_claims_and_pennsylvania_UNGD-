@@ -198,4 +198,146 @@ for year in range(2002, 2016):
         counted_df.to_csv('/gpfs/data/sanghavi-lab/Kevin/Output/FIN-icd-counts-per-zipcode-with-mbsf/FIN-icd-counts-per-zipcode-with-mbsf-{0}-using-{1}-dgns-columns.csv'.format(year, len(DIAGNOSIS_COLS)), index=False)
         print('Written to file!\n')
 
+## RUN THIS PART OF CODE SEPARATELY TO ADD THE LAST THREE MONTHS OF HOSPIATLIZATIONS IN 2015 (WHICH IS DROPPED FROM THE LAST CODE)
+# # GET ZIP CODE AND HEALTH OUTCOME INFORMATION ====================
 
+# # Read in zip codes used in study
+# zipcodes_of_interest = pd.read_csv('/gpfs/data/cms-share/duas/54200/Kevin/Data/included-zipcodes-list.csv', dtype='object')
+
+# study_group2zipcodes = {}  # dict from study group (e.g. 'PA BORDER') to list of zipcodes (as strings)
+# for index, row in zipcodes_of_interest.iterrows():
+#     sg = row['StudyGroup']
+#     zc = row['ZipCode']
+#     if sg in study_group2zipcodes.keys():
+#         study_group2zipcodes[sg].append(zc)
+#     else:
+#         study_group2zipcodes[sg] = [zc]
+# # print('study_group2zipcodes:')
+# # print(study_group2zipcodes)
+
+# # Read in outcomes for study and associated ICD-9 codes
+# outcome_group_ICD10s = pd.read_csv('/gpfs/data/cms-share/duas/54200/Zoey/ICD10/Data/FIN-outcome-group-ICD10s.csv', dtype='object')
+
+# outcome2icd10s = {}  # dict from outcome group (e.g. 'air-cardiovascular-all') to list of ICD9 codes (e.g. ['410', '411', ...])
+# for index, row in outcome_group_ICD10s.iterrows():
+#     key = row['OutcomeGroup']
+#     element = row['ICD10']
+#     if key in outcome2icd10s.keys():
+#         outcome2icd10s[key].append(element)
+#     else:
+#         outcome2icd10s[key] = [element]
+# # print('outcome2icd10s:')
+# # print(outcome2icd10s)
+
+# ## read in icd codes to exclude for stroke
+# icd_exclude = pd.read_csv('/gpfs/data/cms-share/duas/54200/Zoey/ICD10/Data/FIN-outcome-group-ICD10s-exclusion.csv', dtype='object')
+
+
+
+# # FOR EACH YEAR, COUNT UP THE NUMBER OF CASES FOR EACH OUTCOME =============================
+
+# year = 2015
+# print('\n\nSTARTING YEAR {} =======\n'.format(str(year)))
+
+# # Read in MedPAR data (inpatient claims) for that year
+# medpar = pd.read_csv(
+#     '/gpfs/data/cms-share/duas/54200/Zoey/ICD10/Output/THES-DID-INP-REF-whole-state-filtered-medpar-{0}.csv'.format(
+#         str(year)),
+#     dtype='object')
+
+# # print('Read in medpar data:')
+# # print(medpar.head())
+# # print(medpar.shape)
+
+# # Filter to just the zipcodes of interest
+# medpar = medpar[medpar['BENE_MLG_CNTCT_ZIP_CD'].isin(zipcodes_of_interest['ZipCode'])]
+# # print('\nFiltered to zipcodes of interest:')
+# # print(medpar.head())
+# # print(medpar.shape) #26119
+
+# # Merge with mbsf data
+# mbsf = pd.read_csv(
+#     '/gpfs/data/cms-share/duas/54200/Kevin/Output/THES-DID-INP-REF-ZIP-mbsf-zipcode-subsets/THES-DID-INP-REF-ZIP-mbsf-zipcode-subset-{}.csv'.format(
+#         year),
+#     dtype='object', engine='python', encoding='latin')
+# col_prefix = ('BENE_' if year <= 2010 else '') + 'MDCR_ENTLMT_BUYIN_IND_'
+
+# mbsf = mbsf[['BENE_ID'] + [(col_prefix + '{:02d}').format(i) for i in range(1, 13)]]
+# medpar = medpar.merge(mbsf, on='BENE_ID', how='left')
+# # print('Merged with mbsf subset:')
+# # print(medpar.head())
+# # print(medpar.shape)
+
+# # Filter to just those with Part A and B in their admission month
+# medpar = medpar.assign(admission_month=medpar['ADMSN_DT'].str[2:5])  # will be JAN, FEB, MAR, etc.
+# medpar = medpar[(((medpar['admission_month'] == 'JAN') & (medpar[col_prefix + '01'] == '3')) |
+#                  ((medpar['admission_month'] == 'FEB') & (medpar[col_prefix + '02'] == '3')) |
+#                  ((medpar['admission_month'] == 'MAR') & (medpar[col_prefix + '03'] == '3')) |
+#                  ((medpar['admission_month'] == 'APR') & (medpar[col_prefix + '04'] == '3')) |
+#                  ((medpar['admission_month'] == 'MAY') & (medpar[col_prefix + '05'] == '3')) |
+#                  ((medpar['admission_month'] == 'JUN') & (medpar[col_prefix + '06'] == '3')) |
+#                  ((medpar['admission_month'] == 'JUL') & (medpar[col_prefix + '07'] == '3')) |
+#                  ((medpar['admission_month'] == 'AUG') & (medpar[col_prefix + '08'] == '3')) |
+#                  ((medpar['admission_month'] == 'SEP') & (medpar[col_prefix + '09'] == '3')) |
+#                  ((medpar['admission_month'] == 'OCT') & (medpar[col_prefix + '10'] == '3')) |
+#                  ((medpar['admission_month'] == 'NOV') & (medpar[col_prefix + '11'] == '3')) |
+#                  ((medpar['admission_month'] == 'DEC') & (medpar[col_prefix + '12'] == '3')))]
+# # print('Filtered to FFS:')
+# # print(medpar.head())
+# # print(medpar.shape) #20123
+
+# # Now, within each year, repeat the process twice (once using only 2 diagnosis columns, once using all 25)
+# for DIAGNOSIS_COLS in [[1, 2], range(1, 26)]:
+
+#     dgns_cols = ['DGNS_{}_CD'.format(i) for i in DIAGNOSIS_COLS]
+#     all_dgns_cols = ['DGNS_{}_CD'.format(i) for i in range(1, 26)]
+
+#     count_df_lst = []
+#     for outcome in outcome2icd10s.keys():
+#         count_df = pd.DataFrame({'ZipCode': [],
+#                                  'NumClaims': []})
+
+#         icd_code = outcome2icd10s[outcome]
+#         ## select claims with certain icd codes
+#         medpar_subset = medpar[medpar[dgns_cols].isin(icd_code).any(axis=1)]
+
+#         if outcome == 'stroke':## exclude claims with certain diagnosis codes
+#             medpar_subset = medpar_subset[~medpar_subset[all_dgns_cols].isin(icd_exclude['Exclusion']).any(axis=1)]
+#             medpar_subset = medpar_subset[medpar_subset['DGNS_1_CD'] != 'Z5189']
+#         count_by_zipcode = medpar_subset.groupby('BENE_MLG_CNTCT_ZIP_CD')['MEDPAR_ID'].count().rename('NumClaims').reset_index()
+#         count_df['ZipCode'] = count_by_zipcode['BENE_MLG_CNTCT_ZIP_CD']
+#         count_df['NumClaims'] = count_by_zipcode['NumClaims']
+#         count_df['OutcomeGroup'] = outcome
+#         count_df_lst.append(count_df)
+
+#     count_df_final = pd.concat(count_df_lst)
+#     count_df_final['Year'] = 2015
+#     count_df_final['NumDiagnosisColsUsed'] = len(DIAGNOSIS_COLS)
+#     count_df_final.to_csv('/gpfs/data/cms-share/duas/54200/Zoey/ICD10/Output/icd10-counts-per-zipcode-with-mbsf-2015-using-{}-dgns-columns.csv'.format(len(DIAGNOSIS_COLS)),
+#     index=False)
+
+# ## ADD ICD 10 COUNT DATA TO MASTER-DF AND WRITE NEW DATA AS MASTER-DF-UPDATE
+# ## read in original MASTER-DF with no ICD 10 count data in 2015
+# master_df = pd.read_csv('/gpfs/data/cms-share/duas/54200/Kevin/Output/FIN-raw-rates-plots/generating-tables/MASTER-DF.csv')
+
+# ## read in ICD 10 count data
+# icd10_count_lst = [pd.read_csv('/gpfs/data/cms-share/duas/54200/Zoey/ICD10/Output/icd10-counts-per-zipcode-with-mbsf-2015-using-{}-dgns-columns.csv'.format(i))
+#                    for i in [2, 25]]
+# icd10_count_df = pd.concat(icd10_count_lst)
+
+# ## select 2015 data from master-df
+# master_df2015 = master_df[master_df['Year']==2015]
+# master_df_prior2015 = master_df[master_df['Year'] < 2015]
+# master_df2015 = master_df2015.merge(icd10_count_df, on=['ZipCode', "NumDiagnosisColsUsed", "OutcomeGroup", "Year"],
+#                                     suffixes=['_icd9', '_icd10'],
+#                                     how='left')
+
+# master_df2015['NumClaims_icd10'] = master_df2015['NumClaims_icd10'].fillna(0)
+# master_df2015['NumClaims'] = master_df2015['NumClaims_icd9'] + master_df2015['NumClaims_icd10']
+
+# master_df2015 = master_df2015.drop(columns=['NumClaims_icd9', 'NumClaims_icd10'])
+
+
+# master_df_new = pd.concat([master_df_prior2015, master_df2015])
+# master_df_new.to_csv('/gpfs/data/cms-share/duas/54200/Zoey/ICD10/Output/MASTER-DF-UPDATE.csv',
+#                      index=False)
