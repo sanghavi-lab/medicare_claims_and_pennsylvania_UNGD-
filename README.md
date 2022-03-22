@@ -5,6 +5,7 @@ All code and certain de-identified datasets are currently available at (removed 
 Below is a table of code descriptions including the input and output from the code.
 
 | Steps | Script | Description | Input | Output | 
+| ------------- | ------------- || ------------- | ------------- |------------- |
 | 1 | FIN-count-cases-with-mbsf.py | Merge MedPAR and MBSF data, filter to those with Parts A and B coverage, and count the number of cases per outcome group per zip code per year. |       Outcomes to study and corresponding ICD-9 and ICD-10 codes
     FIN-outcomes-groups.csv
     FIN-outcome-group-ICD10s.csv
